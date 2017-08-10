@@ -8,7 +8,6 @@ b = Var "b"
 c = Var "c"
 
 axs = [ add zero a :=: a
-      , add a zero :=: a
       , add (inv a) a :=: zero
       , add (add a b) c :=: add a (add b c) ]
 

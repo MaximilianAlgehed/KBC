@@ -1,5 +1,7 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, Strict #-}
 module KBC where
+
+import Debug.Trace
 
 import Data.Generics.Uniplate.Data
 
@@ -10,6 +12,7 @@ import Data.Generics.Uniplate.Data
 import Data.Map hiding (map, filter, foldr, null)
 import qualified Data.Map as M
 import Data.Ord
+import qualified Data.Set as S
 
 import Control.Monad
 import Control.Monad.Except
@@ -17,8 +20,8 @@ import Control.Monad.State
 
 type Name = String
 
-data Term = Var Name
-          | Fun Name [Term]
+data Term = Var !Name
+          | Fun !Name ![Term]
           deriving (Eq, Data, Typeable)
 
 instance Show Term where
@@ -48,13 +51,13 @@ unify :: Subst -> Term -> Term -> Either String Subst
 unify subst tin uin = let (t, u) = (apply subst tin, apply subst uin) in
   case (t, u) of
     (Var a, u)
-      | t == u                   -> return subst 
-      | occurs a (apply subst u) -> throwError "Occurs check failed"
-      | otherwise                -> return $ insert a u subst 
-    (_, Var a)                   -> unify subst u t
+      | t == u     -> return subst 
+      | occurs a u -> throwError "Occurs check failed"
+      | otherwise  -> return $ insert a u subst 
+    (_, Var a)     -> unify subst u t
     (Fun a ts, Fun b us)
-      | a == b    -> foldM (uncurry . unify) subst (zip ts us)
-      | otherwise -> throwError "Can not unify different functions"
+      | a == b     -> foldM (uncurry . unify) subst (zip ts us)
+      | otherwise  -> throwError "Can not unify different functions"
 
 match :: Subst -> Term -> Term -> Either String Subst
 match subst t u = case (t, u) of
@@ -68,79 +71,91 @@ match subst t u = case (t, u) of
     | otherwise -> throwError "Pattern match failure"
   _ -> throwError "Pattern match failure"
 
-apply :: Data t => Subst -> t -> t 
-apply subst = rewriteBi go
+apply :: Subst -> Term -> Term
+apply subst = rewrite go
   where
     go (Var n) = lookup n subst 
     go _       = Nothing
+
+applyMatch :: Subst -> Term -> Term
+applyMatch subst = transform go
+  where
+    go (Var n) = case lookup n subst of
+      Just t  -> t
+      Nothing -> Var n
+    go t = t
 
 occurs :: Name -> Term -> Bool
 occurs n t =
   elem n (variables t)
 
-data Equation = Term :=: Term deriving (Eq, Ord, Data, Typeable)
+data Equation = !Term :=: !Term deriving (Eq, Ord, Data, Typeable)
 
 instance Show Equation where
   show (lhs :=: rhs) = show lhs ++ " = " ++ show rhs
 
-data Rule = Term :-> Term deriving (Eq, Ord, Data, Typeable)
+data Rule = !Term :-> !Term deriving (Eq, Ord, Data, Typeable)
 
 instance Show Rule where
   show (lhs :-> rhs) = show lhs ++ " -> " ++ show rhs
 
 rewrites :: Rule -> Term -> [Term]
-rewrites (lhs :-> rhs) t = filter (/= t) . nub . go $ t
+rewrites (lhs :-> rhs) = go
   where
-    go t@(Var v) = case match empty lhs (Var v) of
+    go t@(Var v) = case match empty lhs t of
       Left _  -> [t]
-      Right s -> [t, apply s rhs]
+      Right s -> [t, applyMatch s rhs]
     go t@(Fun f ts) = case match empty lhs t of
       Left _  -> Fun f <$> possibilities ts
-      Right s -> (apply s rhs) : (Fun f <$> possibilities ts)
+      Right s -> (applyMatch s rhs) : (Fun f <$> possibilities ts)
 
     possibilities [] = [[]]
     possibilities (t:ts) = do
-      t' <- go t
+      t'  <- go t
       ts' <- possibilities ts
       return (t' : ts')
 
-allRewrites :: [Rule] -> Term -> [Term]
-allRewrites [] t     = [t]
-allRewrites (r:rs) t =
-  let fr  = fullyRewrite r t
-      ros = rewrites r t in
-  fr : allRewrites rs fr ++
-  concatMap (allRewrites (r:rs)) ros ++
-  allRewrites rs t
-
 fullyRewrite :: Rule -> Term -> Term
-fullyRewrite (lhs :-> rhs) = rewrite go
+fullyRewrite r@(lhs :-> rhs) = go
   where
-    go t = case match empty lhs t of
-      Left _  -> Nothing
-      Right s -> Just $ apply s rhs
+    go t@(Var v) = case match empty lhs t of
+      Left _  -> t
+      Right s -> go $ applyMatch s rhs
+    go t@(Fun f ts) = case match empty lhs t of
+      Left _  -> Fun f (go <$> ts)
+      Right s -> go $ applyMatch s rhs
 
 type Renamer a = State Int a
 
 runRenamer :: Renamer a -> a
 runRenamer r = evalState r 0
 
+gensym :: Int -> String
+gensym n
+  | n < 26    = letter n
+  | otherwise = gensym (n `div` 26) ++ letter (n `mod` 26)
+  where
+    letter :: Int -> String
+    letter n = (:[]) $ ['a'..'z'] !! n
+
 newName :: Renamer Name
 newName = do
   i <- get
   modify (+1)
-  return $ "?a" ++ show i
+  return $ gensym i 
 
 rename :: Term -> Renamer Term
 rename t = do
   let vs = nub $ variables t
   ns <- mapM (\_ -> Var <$> newName) vs
   let subst = fromList $ zip vs ns
-  return $ apply subst t
+  return $ applyMatch subst t
 
 superimpose :: Term -> Term -> [Term]
-superimpose l r = [ apply s lterm | s <- go lterm ]
+superimpose l r = result
   where
+    result = [ apply s lterm | s <- go lterm ]
+
     (lterm, rterm) = runRenamer $ do
       l <- rename l
       r <- rename r
@@ -151,12 +166,18 @@ superimpose l r = [ apply s lterm | s <- go lterm ]
       Left _  -> concatMap go ts
       Right s -> s : concatMap go ts
 
-criticalPairs :: [Rule] -> Rule -> Rule -> [Equation]
-criticalPairs allRules rl@(ll :-> _) rr@(lr :-> _) =
-  let sups  = superimpose ll lr ++ superimpose lr ll
-      cps s = allRewrites [rl, rr] s in
-  nub $ filter (not . trivial) $ map (normalise (rl : rr : allRules)) $
-  nub $ [ l :=: r | s <- sups, l <- cps s, r <- cps s, l /= r ]
+allRewrites :: [Rule] -> Term -> [Term]
+allRewrites [] t     = []
+allRewrites (r:rs) t = let rt = rewrites r t in
+  allRewrites rs t ++ rt ++ concat [ allRewrites rs t' | t' <- rt ]
+
+criticalPairs :: [Rule] -> Rule -> Rule -> ProofMonad [Equation]
+criticalPairs allRules rl@(ll :-> _) rr@(lr :-> _) = do
+  let sups  = nub $ superimpose ll lr ++ superimpose lr ll
+      cps s = nub $ allRewrites (rl:rr:allRules) s
+  return $ nub $ filter (not . trivial) $
+           map (normalise (rl : rr : allRules)) $
+           [ l :=: r | s <- sups, l <- cps s, r <- cps s]
 
 axiomToRule :: Equation -> Rule
 axiomToRule e = let (l :=: r) = order e in
@@ -184,12 +205,14 @@ normalise rs e = order $
         converge op ot
 
 data KBCState = KBC { axioms :: [Equation]
-                    , rules  :: [Rule] } deriving (Ord, Eq, Show)
+                    , rules  :: [Rule]
+                    , count  :: Int
+                    } deriving (Ord, Eq, Show)
 
-type ProofMonad a = StateT KBCState IO ()
+type ProofMonad a = StateT KBCState IO a
 
 runProver :: [Equation] -> ProofMonad () -> IO [Rule]
-runProver eqns p = rules <$> execStateT p (KBC eqns [])
+runProver eqns p = rules <$> execStateT p (KBC eqns [] 0)
 
 kbc :: ProofMonad ()
 kbc = do
@@ -199,8 +222,22 @@ kbc = do
     let ax = normalise rs $ head axs
     modify (\s -> s { axioms = tail $ axioms s })
     unless (trivial ax) $ do
+      
       let ar  = axiomToRule ax
-          axs = concatMap (criticalPairs (ar:rs) ar) (ar:rs)
-      liftIO $ print ar
-      modify (\s -> s { axioms = axioms s ++ axs, rules = ar : rules s })
+      axss <- mapM (criticalPairs (ar:rs) ar) (ar:rs)
+      let axs = filter (not . trivial) .
+                map (normalise (ar:rs)) $ concat axss
+      modify (\s -> s { axioms = sort $ axioms s ++ axs
+                      , rules = ar : rules s
+                      , count = count s + 1
+                      })
+
+      c <- gets count
+      --liftIO $ putStrLn "\n\n"
+      axs <- gets axioms
+      liftIO $ print (length axs)
+      liftIO $ putStrLn (show c ++ ". " ++ show ax)
+      --liftIO $ print rs
+      --liftIO $ print axs
+      --liftIO $ putStrLn "\n\n"
     kbc 
