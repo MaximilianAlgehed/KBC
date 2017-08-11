@@ -9,7 +9,7 @@ import Prelude hiding (lookup)
 import Data.Data
 import Data.List hiding (lookup, insert)
 import Data.Generics.Uniplate.Data
-import Data.Map hiding (map, filter, foldr, null)
+import Data.Map hiding (map, filter, foldr, null, size, (\\))
 import qualified Data.Map as M
 import Data.Ord
 import qualified Data.Set as S
@@ -28,6 +28,10 @@ instance Show Term where
   show t = case t of
     Var n -> n
     Fun f _ ts -> f ++ "(" ++ intercalate ", " (show <$> ts) ++ ")"
+
+size :: Term -> Int
+size (Var _) = 1
+size (Fun _ _ ts) = 1 + sum (size <$> ts)
 
 weight :: Term -> Int
 weight (Var _)      = 1
@@ -192,6 +196,9 @@ axiomToRule e
   | otherwise = let (l :=: r) = order e in
   l :-> r
 
+ruleToAxiom :: Rule -> Equation
+ruleToAxiom (l :-> r) = l :=: r
+
 order :: Equation -> Equation
 order (l :=: r)
   | weight l < weight r  = r :=: l
@@ -242,6 +249,17 @@ type ProofMonad a = StateT KBCState IO a
 runProver :: [Equation] -> ProofMonad () -> IO [Rule]
 runProver eqns p = rules <$> execStateT p (KBC eqns [] 0)
 
+reduceRules :: ProofMonad ()
+reduceRules = do
+  rs <- gets rules
+  let rs' = nub
+          $ map axiomToRule
+          $ filter (not . trivial)
+          $ map ((\e -> normalise (rs \\ [axiomToRule e]) e) . ruleToAxiom)
+            rs
+  modify (\s -> s { rules = rs' })
+
+
 kbc :: ProofMonad ()
 kbc = do
   axs <- gets axioms
@@ -257,12 +275,12 @@ kbc = do
                 map (normalise (ar:rs)) $ concat axss
       modify (\s -> s {          -- This needs to be improved somehow
                                  -- take heuristic from JJ Dick paper
-                        axioms = sortBy (comparing $ weight . lhs) 
+                        axioms = sortBy (comparing $ (\e -> weight (lhs e) +
+                                                            size (lhs e)))
                                $ axioms s ++ axs
                       , rules = ar : rules s
                       , count = count s + 1
                       })
-
       c <- gets count
       liftIO $ putStrLn (show c ++ ". " ++ show ar)
     kbc 
