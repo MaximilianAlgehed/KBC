@@ -155,6 +155,8 @@ rename t = do
   let subst = fromList $ zip vs ns
   return $ applyMatch subst t
 
+{- Change this to only produce the critical pair arising from rewriting at
+ - the specific place -}
 superimpose :: Term -> Term -> [Term]
 superimpose l r = result
   where
