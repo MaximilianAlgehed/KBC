@@ -185,7 +185,7 @@ criticalPairs :: [Rule] -> Rule -> Rule -> ProofMonad [Equation]
 criticalPairs allRules rl@(ll :-> _) rr@(lr :-> _) = do
   let fnub = S.toList . S.fromList
       sups    = fnub $ superimpose ll lr ++ superimpose lr ll
-      cps s   = fnub $ allRewrites (rl:rr:allRules) s
+      cps s   = fnub $ allRewrites [rl, rr] s
       cpssups = cps <$> sups
 
   return $ nub $ filter (not . trivial) $
