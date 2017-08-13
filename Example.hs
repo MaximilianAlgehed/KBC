@@ -12,12 +12,11 @@ c = Var "c"
 
 axs = [ add zero a :=: a
       , add (inv a) a :=: zero
-      , add (add a b) c :=: add a (add b c) ]
-      {-
+      , add (add a b) c :=: add a (add b c)
       , mul one a :=: a
       , mul a one :=: a
       , mul (mul a b) c :=: mul a (mul b c)
-      , mul a (add b c) :=: add (mul a b) (mul a c)] -}
+      , mul a (add b c) :=: add (mul a b) (mul a c)]
 
 main = do
   runProver axs kbc

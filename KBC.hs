@@ -218,6 +218,12 @@ lexLess :: Term -> Term -> Maybe Bool
 lexLess (Var _) (Var _) = Nothing
 lexLess (Var _) _       = Just True
 lexLess _ (Var _)       = Just False
+{-
+lexLess (Fun f _ [_]) (Fun g _ _)
+  | f == g    = Just False
+  | otherwise = Just True
+lexLess (Fun f _ ts) (Fun g _ [_]) = Just (null ts)
+-}
 lexLess (Fun f _ ts) (Fun g _ us)
   | f < g     = Just True
   | g < f     = Just False
